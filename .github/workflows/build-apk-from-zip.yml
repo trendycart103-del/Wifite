@@ -1,0 +1,113 @@
+
+name: Build Android APK From ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Extract ZIP and Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # IMPORTANT: Use v4 and install only platform-tools.
+      # This avoids the obsolete SDK "tools" package.
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Find Android Project ZIP
+        id: findzip
+        shell: bash
+        run: |
+          set -e
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" \
+            -not -path "./.git/*" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No project ZIP found!"
+            exit 1
+          fi
+
+          echo "Found ZIP: $ZIP_FILE"
+          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Android Project
+        run: |
+          mkdir -p "$RUNNER_TEMP/android-project"
+          unzip -q "${{ steps.findzip.outputs.zip_file }}" \
+            -d "$RUNNER_TEMP/android-project"
+
+      - name: Locate Android Gradle Project
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS_FILE=$(find "$RUNNER_TEMP/android-project" \
+            -type f -name "settings.gradle.kts" -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle.kts not found!"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: app/build.gradle.kts not found!"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project found: $PROJECT_DIR"
+
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build Debug APK
+        run: |
+          gradle --no-daemon \
+            -p "$PROJECT_DIR" \
+            :app:assembleDebug
+
+      - name: Find Generated APK
+        shell: bash
+        run: |
+          set -e
+          APK_FILE=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+            -type f -name "*.apk" -print -quit)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK was not generated!"
+            exit 1
+          fi
+
+          echo "APK generated: $APK_FILE"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WifiteSafeAndroid-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+          
